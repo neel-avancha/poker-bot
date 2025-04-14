@@ -79,6 +79,7 @@ def command_line_parser():
             runner.dqn_train_keras_rl(model_name)
         
         elif args['dqn_train_custom']:
+            # TODO: Implement this!
             runner.dqn_train_custom_q2()
 
         elif args['dqn_play']:
