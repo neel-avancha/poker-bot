@@ -104,23 +104,27 @@ class DoubleDQNAgent:
 
         self.steps = 0
 
-    def select_action(self, state, epsilon):
+    def select_action(self, state, legal_moves, epsilon):
         if np.random.rand() < epsilon:
-            return np.random.randint(0, self.q_net.fc3.out_features)
-        state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+            return random.choice(legal_moves)
+        
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            return self.q_net(state).argmax(dim=1).item()
+            return self.q_net(state_tensor).squeeze(0).cpu().numpy()
 
-    def update(self, batch_size):
+    def update(self, batch_size, beta=0.4):
         if len(self.memory) < batch_size:
             return
 
-        states, actions, rewards, next_states, dones = self.memory.sample(batch_size)
+        states, actions, rewards, next_states, dones = self.memory.sample(batch_size, beta)
+
         states = torch.tensor(states, dtype=torch.float32).to(self.device)
         actions = torch.tensor(actions).unsqueeze(1).to(self.device)
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(self.device)
         next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
         dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(self.device)
+        weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(self.device)
+
 
         # Q(s,a)
         q_values = self.q_net(states).gather(1, actions)
@@ -130,12 +134,13 @@ class DoubleDQNAgent:
         next_q_values = self.q_target(next_states).gather(1, next_actions)
         target_q = rewards + self.gamma * (1 - dones) * next_q_values
 
-        loss = F.mse_loss(q_values, target_q)
-
+        td_errors = q_values - target_q
+        # MSE Loss with weight normalization from the priortized replay buffer. 
+        loss = (td_errors.pow(2) * weights).mean()
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        # Soft update
+        # Soft update -- wanted to try this rather than the hard update we have been using in class. 
         for target_param, param in zip(self.q_target.parameters(), self.q_net.parameters()):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
