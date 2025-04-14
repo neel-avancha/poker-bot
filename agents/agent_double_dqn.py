@@ -13,30 +13,78 @@ class QNetwork(nn.Module):
         super(QNetwork, self).__init__()
 
         self.fc1 = nn.Linear(input_dim, 512)
-        self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, output_dim)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 128)
+        self.fc4 = nn.Linear(128, output_dim)
 
         self.relu = nn.ReLU()
 
     def forward(self, x):
         x = self.relu(self.fc1(x))
         x = self.relu(self.fc2(x))
-        x = self.fc3(x)
+        x = self.relu(self.fc3(x))
+        x = self.fc4(x)
 
         return x
     
-
-class ReplayBuffer:
-    def __init__(self, capacity=100000):
-        self.buffer = deque(maxlen=capacity)
+class PrioritizedReplayBuffer:
+    # Running a priortized replay buffer in order to maximize states which are not 
+    # visited often but can be high stakes. 
+    def __init__(self, capacity=100000, alpha=0.6):
+        # Circular implementation similar to Exercise 6: FIFO approach. 
+        self.capacity = capacity
+        self.buffer = []
+        self.pos = 0
+        self.priorities = np.zeros((capacity,), dtype=np.float32)
+        self.alpha = alpha
 
     def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+        # When we add a new transition to the buffer, we don't know the TD Error, 
+        # and the priority as a result. So we assign it the maximum current priority
+        # so that each new experience can be sampled soon. Avoids cold start problem. 
+        max_prio = self.priorities.max() if self.buffer else 1.0
+        if len(self.buffer) < self.capacity:
+            self.buffer.append((state, action, reward, next_state, done))
+        else:
+            self.buffer[self.pos] = (state, action, reward, next_state, done)
+        self.priorities[self.pos] = max_prio
+        self.pos = (self.pos + 1) % self.capacity
 
-    def sample(self, batch_size):
-        samples = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = map(np.array, zip(*samples))
-        return states, actions, rewards, next_states, dones
+    def sample(self, batch_size, beta=0.4):
+    # Sample only valid experiences.
+        if len(self.buffer) == self.capacity:
+            prios = self.priorities
+        else:
+            prios = self.priorities[:self.pos]
+
+        # Convert priorities to a valid probability distribution
+        probs = prios ** self.alpha
+        probs /= probs.sum()
+
+        # Gather the indices using weighted random choice. 
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        samples = [self.buffer[idx] for idx in indices]
+
+        # Importance sampling to eliminate the bias presented from weighted sampling. 
+        total = len(self.buffer)
+        weights = (total * probs[indices]) ** (-beta)
+        weights /= weights.max()
+        weights = np.array(weights, dtype=np.float32)
+
+        states, actions, rewards, next_states, dones = zip(*samples)
+        return (
+            np.array(states),
+            np.array(actions),
+            np.array(rewards),
+            np.array(next_states),
+            np.array(dones),
+            indices,
+            weights
+        )
+
+    def update_priorities(self, batch_indices, batch_priorities):
+        for idx, prio in zip(batch_indices, batch_priorities):
+            self.priorities[idx] = prio
 
     def __len__(self):
         return len(self.buffer)
@@ -49,7 +97,7 @@ class DoubleDQNAgent:
         self.q_target.load_state_dict(self.q_net.state_dict())
         self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=lr)
 
-        self.memory = ReplayBuffer()
+        self.memory = PrioritizedReplayBuffer()
         self.gamma = gamma
         self.tau = tau
         self.device = device
