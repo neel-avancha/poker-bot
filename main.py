@@ -9,6 +9,7 @@ Usage:
   main.py selfplay dqn_train [options]
   main.py selfplay dqn_play [options]
   main.py learn_table_scraping [options]
+  main.py dqn_train_custom [options]
 
 options:
   -h --help                 Show this screen.
@@ -76,6 +77,9 @@ def command_line_parser():
 
         elif args['dqn_train']:
             runner.dqn_train_keras_rl(model_name)
+        
+        elif args['dqn_train_custom']:
+            runner.dqn_train_custom_q2()
 
         elif args['dqn_play']:
             runner.dqn_play_keras_rl(model_name)
