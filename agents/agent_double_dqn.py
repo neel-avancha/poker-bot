@@ -5,6 +5,8 @@ import torch.optim as optim
 import random
 from collections import deque
 import numpy as np
+import logging as log
+import time
 
 class QNetwork(nn.Module):
     # Using funnel architecture for the neurons. Ideally we would use start_dim_hidden_layer. 
@@ -16,6 +18,7 @@ class QNetwork(nn.Module):
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 128)
         self.fc4 = nn.Linear(128, output_dim)
+
 
         self.relu = nn.ReLU()
 
@@ -89,9 +92,12 @@ class PrioritizedReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-
 class DoubleDQNAgent:
-    def __init__(self, state_dim, action_dim, lr=1e-3, gamma=0.99, tau=1e-3, device='cpu'):
+    # Wanted to experiment with a Boltzmann policy stategy, versus epsilon-greedy. 
+    # The Boltzmann should balance out exploration better as well, and since the game is very 
+    # unknown, we can't definitively make a decision at most states within our game. 
+    def __init__(self, state_dim, action_dim, lr=1e-3, gamma=0.99, tau=1e-3, device='cpu',
+                 boltzmann_tau=1.0, clip=(-500, 500), use_boltzmann=False):
         self.q_net = QNetwork(state_dim, action_dim).to(device)
         self.q_target = QNetwork(state_dim, action_dim).to(device)
         self.q_target.load_state_dict(self.q_net.state_dict())
@@ -99,48 +105,35 @@ class DoubleDQNAgent:
 
         self.memory = PrioritizedReplayBuffer()
         self.gamma = gamma
-        self.tau = tau
+        self.tau = tau  # soft update
         self.device = device
+        self.action_dim = action_dim
 
-        self.steps = 0
+        # Boltzmann policy settings
+        self.use_boltzmann = use_boltzmann
+        self.boltzmann_tau = boltzmann_tau
+        self.clip = clip
 
     def select_action(self, state, legal_moves, epsilon):
-        if np.random.rand() < epsilon:
-            return random.choice(legal_moves)
-        
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            return self.q_net(state_tensor).squeeze(0).cpu().numpy()
+            q_values = self.q_net(state_tensor).squeeze(0).cpu().numpy()
 
-    def update(self, batch_size, beta=0.4):
-        if len(self.memory) < batch_size:
-            return
+        # Mask out illegal moves
+        mask = np.full(self.action_dim, -1e10)
+        mask[legal_moves] = 0
+        masked_q_values = q_values + mask
 
-        states, actions, rewards, next_states, dones = self.memory.sample(batch_size, beta)
+        # --- Boltzmann Policy ---
+        if self.use_boltzmann:
+            clipped_q = np.clip(masked_q_values / self.boltzmann_tau, self.clip[0], self.clip[1])
+            exp_values = np.exp(clipped_q)
+            probs = exp_values / np.sum(exp_values)
+            action = np.random.choice(range(self.action_dim), p=probs)
+            log.info(f"Chosen action by Boltzmann: {action} | probs: {probs}")
+            return action
 
-        states = torch.tensor(states, dtype=torch.float32).to(self.device)
-        actions = torch.tensor(actions).unsqueeze(1).to(self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(self.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
-        dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(self.device)
-        weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(self.device)
-
-
-        # Q(s,a)
-        q_values = self.q_net(states).gather(1, actions)
-
-        # Double DQN target
-        next_actions = self.q_net(next_states).argmax(1, keepdim=True)
-        next_q_values = self.q_target(next_states).gather(1, next_actions)
-        target_q = rewards + self.gamma * (1 - dones) * next_q_values
-
-        td_errors = q_values - target_q
-        # MSE Loss with weight normalization from the priortized replay buffer. 
-        loss = (td_errors.pow(2) * weights).mean()
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        # Soft update -- wanted to try this rather than the hard update we have been using in class. 
-        for target_param, param in zip(self.q_target.parameters(), self.q_net.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+        # --- ε-greedy Policy ---
+        if np.random.rand() < epsilon:
+            return random.choice(legal_moves)
+        return int(np.argmax(masked_q_values))
