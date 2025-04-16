@@ -8,6 +8,25 @@ import numpy as np
 import logging as log
 import time
 
+class Player:
+    """Mandatory class with the player methods"""
+
+    def __init__(self, name='DQN', load_model=None, env=None):
+        """Initiaization of an agent"""
+        self.equity_alive = 0
+        self.actions = []
+        self.last_action_in_stage = ''
+        self.temp_stack = []
+        self.name = name
+        self.autoplay = True
+
+        self.dqn = None
+        self.model = None
+        self.env = env
+
+        if load_model:
+            self.load(load_model)
+
 class QNetwork(nn.Module):
     # Using funnel architecture for the neurons. Ideally we would use start_dim_hidden_layer. 
     # input_dim = observation vector -> 512 -> 256 -> 128 -> output dimensions.
