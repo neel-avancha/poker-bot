@@ -8,8 +8,8 @@ Usage:
   main.py selfplay equity_improvement --improvement_rounds=<> [options]
   main.py selfplay dqn_train [options]
   main.py selfplay dqn_play [options]
+  main.py selfplay dqn_train_custom [options]
   main.py learn_table_scraping [options]
-  main.py dqn_train_custom [options]
 
 options:
   -h --help                 Show this screen.
@@ -79,8 +79,7 @@ def command_line_parser():
             runner.dqn_train_keras_rl(model_name)
         
         elif args['dqn_train_custom']:
-            # TODO: Implement this!
-            runner.dqn_train_custom_q2()
+            runner.dqn_train_custom(model_name)
 
         elif args['dqn_play']:
             runner.dqn_play_keras_rl(model_name)
@@ -228,50 +227,43 @@ class SelfPlay:
         dqn = DQNPlayer(load_model=model_name, env=self.env)
         dqn.play(nb_episodes=self.num_episodes, render=self.render)
 
-    def dqn_train_custom_q1(self):
-        """Create 6 players, 4 of them equity based, 2 of them random"""
+
+    def dqn_train_custom(self, model_name):
+        """Train a PyTorch-based DQN agent"""
         from agents.agent_consider_equity import Player as EquityPlayer
-        from agents.agent_custom_q1 import Player as Custom_Q1
         from agents.agent_random import Player as RandomPlayer
+        from agents.agent_double_dqn import Player as TorchDQNPlayer  # Your PyTorch implementation
+        import pandas as pd
+        
         env_name = 'neuron_poker-v0'
         self.env = gym.make(env_name, initial_stacks=self.stack, render=self.render)
-        # self.env.add_player(EquityPlayer(name='equity/50/50', min_call_equity=.5, min_bet_equity=-.5))
-        # self.env.add_player(EquityPlayer(name='equity/50/80', min_call_equity=.8, min_bet_equity=-.8))
-        # self.env.add_player(EquityPlayer(name='equity/70/70', min_call_equity=.7, min_bet_equity=-.7))
-        self.env.add_player(EquityPlayer(name='equity/20/30', min_call_equity=.2, min_bet_equity=-.3))
-        # self.env.add_player(RandomPlayer())
-        self.env.add_player(RandomPlayer())
-        self.env.add_player(RandomPlayer())
-        self.env.add_player(Custom_Q1(name='Deep_Q1'))
+        
+        # Add opponents
+        self.env.add_player(EquityPlayer(name='equity/20/30', min_call_equity=.20, min_bet_equity=.30))
+        self.env.add_player(EquityPlayer(name='equity/30/40', min_call_equity=.30, min_bet_equity=.40))
 
+        # Add your PyTorch DQN player
+        torch_dqn_player = TorchDQNPlayer(name=model_name, env=self.env)
+        self.env.add_player(torch_dqn_player)
+        
+        # Train the agent
+        torch_dqn_player.train(env_name)
+        
+        # Run evaluation episodes
+        self.winner_in_episodes = []
         for _ in range(self.num_episodes):
             self.env.reset()
             self.winner_in_episodes.append(self.env.winner_ix)
-
+        
+        # Print results
         league_table = pd.Series(self.winner_in_episodes).value_counts()
         best_player = league_table.index[0]
-
+        
         print("League Table")
         print("============")
         print(league_table)
         print(f"Best Player: {best_player}")
 
-
-    def dqn_train_custom_q2(self):
-        from agents.agent_consider_equity import Player as EquityPlayer
-        from agents.agent_random import Player as RandomPlayer
-        from agents.agent_double_dqn import Player as CustomDQNPlayer
-
-        env_name = 'neuron_poker-v0'
-        env = gym.make(env_name, initial_stacks=self.stack, render=self.render, funds_plot=self.funds_plot)
-
-        # Add in the opponents. 
-        env.add_player(EquityPlayer(name='equity/50/70', min_call_equity=0.5, min_bet_equity=0.7))
-        env.add_player(EquityPlayer(name='equity/20/30', min_call_equity=0.2, min_bet_equity=0.3))
-        env.add_player(RandomPlayer())
-        env.add_player(RandomPlayer())
-
-        # custom_agent = CustomDQN()
 
 
 if __name__ == '__main__':

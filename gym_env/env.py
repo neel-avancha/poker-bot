@@ -127,7 +127,7 @@ class HoldemTable(Env):
         self.player_pots = None  # individual player pots
 
         self.observation = None
-        obs_shape = 1000
+        obs_shape = 175
         self.observation_space = Box(
         low=-np.inf,
         high=np.inf,

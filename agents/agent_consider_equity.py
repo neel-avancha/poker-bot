@@ -21,8 +21,8 @@ class Player:
         _ = observation
         equity_alive = info["player_data"]["equity_to_river_alive"]
 
-        incremen1 = 0.1
-        increment2 = 0.2
+        incremen1 = 0.05
+        increment2 = 0.1
 
         if (
             equity_alive > self.min_bet_equity + increment2
