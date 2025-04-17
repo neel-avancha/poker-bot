@@ -227,16 +227,30 @@ class PrioritizedReplayBuffer:
         self.pos = (self.pos + 1) % self.capacity
 
     def sample(self, batch_size, beta=0.4):
-    # Sample only valid experiences.
+        # Sample only valid experiences.
         if len(self.buffer) == self.capacity:
             prios = self.priorities
         else:
             prios = self.priorities[:self.pos]
-
+            
+        # Make sure priorities are positive, with a small epsilon to ensure no zeros
+        prios = np.maximum(prios, 1e-8)
+        
         # Convert priorities to a valid probability distribution
         probs = prios ** self.alpha
-        probs /= probs.sum()
-
+        
+        # Avoid division by zero
+        probs_sum = np.sum(probs)
+        if probs_sum <= 0 or np.isnan(probs_sum):
+            # Fallback to uniform distribution if we have invalid priorities
+            probs = np.ones_like(prios) / len(prios)
+        else:
+            probs = probs / probs_sum
+        
+        # Double-check for NaN values and replace with uniform distribution if needed
+        if np.isnan(probs).any():
+            probs = np.ones(len(self.buffer)) / len(self.buffer)
+        
         # Gather the indices using weighted random choice. 
         indices = np.random.choice(len(self.buffer), batch_size, p=probs)
         samples = [self.buffer[idx] for idx in indices]
@@ -244,7 +258,15 @@ class PrioritizedReplayBuffer:
         # Importance sampling to eliminate the bias presented from weighted sampling. 
         total = len(self.buffer)
         weights = (total * probs[indices]) ** (-beta)
-        weights /= weights.max()
+        
+        # Normalize weights to prevent extreme values
+        max_weight = np.max(weights)
+        if max_weight > 0 and not np.isnan(max_weight) and not np.isinf(max_weight):
+            weights = weights / max_weight
+        else:
+            # Fallback to uniform weights
+            weights = np.ones_like(weights)
+        
         weights = np.array(weights, dtype=np.float32)
 
         states, actions, rewards, next_states, dones = zip(*samples)
@@ -292,6 +314,10 @@ class DoubleDQNAgent:
         with torch.no_grad():
             q_values = self.q_net(state_tensor).squeeze(0).cpu().numpy()
 
+        if not legal_moves:
+            return 0
+    
+        # print("LEGAL MOVES", legal_moves)
         # Extract integer values from enum objects
         legal_actions_indices = [action.value for action in legal_moves]
         

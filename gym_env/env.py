@@ -638,32 +638,49 @@ class HoldemTable(Env):
         """Determine what moves are allowed in the current state"""
         self.legal_moves = []
 
-        # if self.stage in [Stage.SHOWDOWN, Stage.END_HIDDEN]:
-        #     return
+        # Don't calculate legal moves in terminal states
+        if self.stage in [Stage.SHOWDOWN, Stage.END_HIDDEN]:
+            return
+            
+        # Check if player can check/call/fold
         if self.player_pots[self.current_player.seat] == max(self.player_pots):
             self.legal_moves.append(Action.CHECK)
         else:
             self.legal_moves.append(Action.CALL)
             self.legal_moves.append(Action.FOLD)
 
-        
-        if self.current_player.num_raises_in_street[self.stage] < self.max_raises_per_player_round:
-            if self.current_player.stack >= 3 * self.big_blind - self.player_pots[self.current_player.seat]:
-                self.legal_moves.append(Action.RAISE_3BB)
+        # Only check raises if we're in a valid betting stage
+        if self.stage in [Stage.PREFLOP, Stage.FLOP, Stage.TURN, Stage.RIVER]:
+            # Check player's remaining stack and pot conditions for each raise type
+            min_raise_amount = max(self.big_blind, self.min_call * 2)  # Minimum raise is 2x the current bet
+            
+            # Only add raising options if player has enough chips
+            if self.current_player.stack > 0:  # Only consider raising if player has chips
+                
+                # 3BB Raise (if player has enough chips)
+                if self.current_player.stack >= 3 * self.big_blind - self.player_pots[self.current_player.seat]:
+                    self.legal_moves.append(Action.RAISE_3BB)
 
-            if self.current_player.stack >= ((self.community_pot + self.current_round_pot) / 2) >= self.min_call:
-                self.legal_moves.append(Action.RAISE_HALF_POT)
+                # Half Pot Raise
+                half_pot = (self.community_pot + self.current_round_pot) / 2
+                if self.current_player.stack >= half_pot - self.player_pots[self.current_player.seat] and half_pot >= self.min_call:
+                    self.legal_moves.append(Action.RAISE_HALF_POT)
 
-            if self.current_player.stack >= (self.community_pot + self.current_round_pot) >= self.min_call:
-                self.legal_moves.append(Action.RAISE_POT)
+                # Full Pot Raise
+                pot_size = self.community_pot + self.current_round_pot
+                if self.current_player.stack >= pot_size - self.player_pots[self.current_player.seat] and pot_size >= self.min_call:
+                    self.legal_moves.append(Action.RAISE_POT)
 
-            if self.current_player.stack >= ((self.community_pot + self.current_round_pot) * 2) >= self.min_call:
-                self.legal_moves.append(Action.RAISE_2POT)
+                # 2x Pot Raise
+                double_pot = (self.community_pot + self.current_round_pot) * 2
+                if self.current_player.stack >= double_pot - self.player_pots[self.current_player.seat] and double_pot >= self.min_call:
+                    self.legal_moves.append(Action.RAISE_2POT)
 
-            if self.current_player.stack > 0:
+                # All-In is always an option if player has chips
                 self.legal_moves.append(Action.ALL_IN)
-
-        log.debug(f"Community+current round pot pot: {self.community_pot + self.current_round_pot}")
+                
+            # # Print legal moves for debugging
+            # print("LEGAL MOVES", self.legal_moves)
 
     def _close_round(self):
         """put player_pots into community pots"""
