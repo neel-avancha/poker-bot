@@ -170,6 +170,7 @@ class HoldemTable(Env):
         self._get_environment()
         # auto play for agents where autoplay is set
         if self._agent_is_autoplay() and not self.done:
+            print("Agent is autoplay")
             self.step('initial_player_autoplay')  # kick off the first action after bb by an autoplay agent
 
         return self.array_everything
@@ -436,6 +437,7 @@ class HoldemTable(Env):
         self.table_cards = []
         self._create_card_deck()
         self.stage = Stage.PREFLOP
+        print("Reached stage PreFlop set", self.stage)
 
         # preflop round1,2, flop>: round 1,2, turn etc...
         self.stage_data = [StageData(len(self.players)) for _ in range(8)]
@@ -477,7 +479,6 @@ class HoldemTable(Env):
         remaining_players = sum(player_alive)
         if remaining_players < 2:
             self._game_over()
-            self.stage = Stage.PREFLOP
             return True
         return False
 
@@ -490,7 +491,7 @@ class HoldemTable(Env):
         if self.funds_plot:
             self.funds_history.reset_index(drop=True).plot()
         log.info(self.funds_history)
-        plt.show()
+        # plt.show()
 
         winner_in_episodes.append(self.winner_ix)
         league_table = pd.Series(winner_in_episodes).value_counts()
