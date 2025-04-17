@@ -149,14 +149,14 @@ class HoldemTable(Env):
         """Reset after game over."""
         self.observation = None
         self.reward = None
-        self.info = None
+        self.info = {}
         self.done = False
         self.funds_history = pd.DataFrame()
         self.first_action_for_hand = [True] * len(self.players)
 
         if not self.players:
             log.warning("No agents added. Add agents before resetting the environment.")
-            return
+            return np.zeros(self.observation_space.shape, dtype=np.float32), {}
 
         for player in self.players:
             player.stack = self.initial_stacks
@@ -169,11 +169,13 @@ class HoldemTable(Env):
         self._start_new_hand()
         self._get_environment()
         # auto play for agents where autoplay is set
+        if 'legal_moves' not in self.info:
+            self.info['legal_moves'] = self.legal_moves
         if self._agent_is_autoplay() and not self.done:
             print("Agent is autoplay")
             self.step('initial_player_autoplay')  # kick off the first action after bb by an autoplay agent
 
-        return self.array_everything
+        return self.array_everything, self.info
 
     def step(self, action):  # pylint: disable=arguments-differ
         """
@@ -193,6 +195,9 @@ class HoldemTable(Env):
             while self._agent_is_autoplay() and not self.done:
                 log.debug("Autoplay agent. Call action method of agent.")
                 self._get_environment()
+
+                if 'legal_moves' not in self.info:
+                    self.info['legal_moves'] = self.legal_moves
                 # call agent's action method
                 action = self.current_player.agent_obj.action(self.legal_moves, self.observation, self.info)
                 if Action(action) not in self.legal_moves:
@@ -205,6 +210,10 @@ class HoldemTable(Env):
 
         else:  # action received from player shell (e.g. keras rl, not autoplay)
             self._get_environment()  # get legal moves
+            if 'legal_moves' not in self.info:
+
+                self.info['legal_moves'] = self.legal_moves
+
             if Action(action) not in self.legal_moves:
                 self._illegal_move(action)
             else:
@@ -245,7 +254,7 @@ class HoldemTable(Env):
 
         self.observation = None
         self.reward = 0
-        self.info = None
+        self.info = {}
 
         self.community_data = CommunityData(len(self.players))
         self.community_data.community_pot = self.community_pot / (self.big_blind * 100)
@@ -287,8 +296,22 @@ class HoldemTable(Env):
 
         self.array_everything = np.concatenate([arr1, arr2, arr3]).flatten()
 
+        if np.isnan(self.array_everything).any():
+            log.error(f"NaN values detected in observation: {np.where(np.isnan(self.array_everything))[0]}")
+            self.array_everything = np.nan_to_num(self.array_everything)
+
+        self.array_everything = self.array_everything.astype(np.float32)
+        self.array_everything = np.clip(self.array_everything, -100.0, 100.0)
+
+        
         self.observation = self.array_everything
         self._get_legal_moves()
+
+            # Ensure legal_moves is always valid
+        if not self.legal_moves and not self.done:
+            log.warning("No legal moves found but game not done - defaulting to CHECK")
+            self.legal_moves = [Action.CHECK]  # Default to CHECK if no legal moves but game not done
+
 
         self.info = {'player_data': self.player_data.__dict__,
                      'community_data': self.community_data.__dict__,

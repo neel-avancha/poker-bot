@@ -7,6 +7,7 @@ from collections import deque
 import numpy as np
 import logging as log
 import time
+import os
 from tqdm import trange
 
 class Player:
@@ -182,8 +183,6 @@ class Player:
             print(f"Episode {episode+1}/{nb_episodes}: Total Reward: {total_reward}, Steps: {step}")
 
 class QNetwork(nn.Module):
-    # Using funnel architecture for the neurons. Ideally we would use start_dim_hidden_layer. 
-    # input_dim = observation vector -> 512 -> 256 -> 128 -> output dimensions.
     def __init__(self, input_dim, output_dim):
         super(QNetwork, self).__init__()
 
@@ -191,16 +190,32 @@ class QNetwork(nn.Module):
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 128)
         self.fc4 = nn.Linear(128, output_dim)
-
-
         self.relu = nn.ReLU()
+        
+        # Better weight initialization
+        nn.init.kaiming_normal_(self.fc1.weight)  # He initialization
+        nn.init.kaiming_normal_(self.fc2.weight)
+        nn.init.kaiming_normal_(self.fc3.weight)
+        nn.init.uniform_(self.fc4.weight, -0.003, 0.003)  # Very small initialization for final layer
+        nn.init.constant_(self.fc4.bias, 0)  # Zero bias initialization
 
     def forward(self, x):
+        # Add checks for NaN or Inf values during forward pass
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            log.error(f"Input to network contains NaN or Inf: {x}")
+            # Reset the problematic values to zero
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        
         x = self.relu(self.fc1(x))
         x = self.relu(self.fc2(x))
         x = self.relu(self.fc3(x))
         x = self.fc4(x)
-
+        
+        # Add check for NaN outputs
+        if torch.isnan(x).any():
+            log.error(f"Network output contains NaN: {x}")
+            x = torch.nan_to_num(x, nan=0.0)
+        
         return x
     
 class PrioritizedReplayBuffer:
@@ -309,63 +324,118 @@ class DoubleDQNAgent:
         self.boltzmann_tau = boltzmann_tau
         self.clip = clip
 
-    def select_action(self, state, legal_moves, epsilon):
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            q_values = self.q_net(state_tensor).squeeze(0).cpu().numpy()
 
+    def save_checkpoint(self, path_prefix):
+        """Save Q-network and target Q-network parameters along with a metadata file."""
+        torch.save(self.q_net.state_dict(), f"{path_prefix}_q_net.pth")
+        torch.save(self.q_target.state_dict(), f"{path_prefix}_q_target.pth")
+
+        # Optionally save metadata like architecture info
+        import json
+        metadata = {
+            "state_dim": self.q_net.fc1.in_features,
+            "action_dim": self.q_net.fc4.out_features,
+            "boltzmann_tau": self.boltzmann_tau,
+            "use_boltzmann": self.use_boltzmann
+        }
+        with open(f"{path_prefix}_metadata.json", "w") as f:
+            json.dump(metadata, f)
+
+        print(f"Checkpoint saved to {path_prefix}_*.pth")
+
+
+    def select_action(self, state, legal_moves, epsilon):
         if not legal_moves:
             return 0
-    
-        # print("LEGAL MOVES", legal_moves)
+        
+        # Convert state to tensor and get Q-values
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+        
+        # Check for NaN in state
+        if torch.isnan(state_tensor).any():
+            log.error(f"NaN detected in state: {state}")
+            state_tensor = torch.nan_to_num(state_tensor, nan=0.0)
+        
+        with torch.no_grad():
+            q_values = self.q_net(state_tensor).squeeze(0).cpu().numpy()
+        
+        # Check for NaN in Q-values
+        if np.isnan(q_values).any():
+            log.error(f"NaN detected in Q-values: {q_values}")
+            q_values = np.nan_to_num(q_values, nan=0.0)
+        
+        # Debug info
+        log.debug(f"Q-values: {q_values}")
+        
         # Extract integer values from enum objects
         legal_actions_indices = [action.value for action in legal_moves]
         
-        # Create mask for illegal actions
-        mask = np.full(self.action_dim, -np.inf)  # Use -infinity instead of a large negative number
-        mask[legal_actions_indices] = 0
-        masked_q_values = q_values + mask
-
-        # --- Boltzmann Policy ---
+        # --- Boltzmann Policy with improved numerical stability ---
         if self.use_boltzmann:
-            # Only consider legal actions to avoid numerical issues
+            # Only consider legal actions
             legal_q_values = np.array([q_values[idx] for idx in legal_actions_indices])
             
-            # Apply temperature scaling
-            scaled_q = legal_q_values / self.boltzmann_tau
+            # Apply temperature scaling with higher temperature initially
+            # Start with higher temperature (e.g., 5.0) and anneal it down over time
+            temperature = max(1.0, self.boltzmann_tau)  # Never go below 1.0
+            scaled_q = legal_q_values / temperature
             
-            # Subtract max value for numerical stability
-            scaled_q = scaled_q - np.max(scaled_q)
+            # Subtract max value for numerical stability (crucial step!)
+            max_q = np.max(scaled_q)
+            if np.isnan(max_q) or np.isinf(max_q):
+                log.error(f"NaN/Inf detected in max_q: {max_q}")
+                max_q = 0
             
-            # Apply clipping to prevent extreme values
-            clipped_q = np.clip(scaled_q, self.clip[0], self.clip[1])
+            scaled_q = scaled_q - max_q
+            
+            # Apply stricter clipping to prevent extreme values
+            clipped_q = np.clip(scaled_q, -10.0, 10.0)  # Much tighter bounds
             
             # Calculate probabilities with improved numerical stability
             exp_values = np.exp(clipped_q)
-            probs = exp_values / np.sum(exp_values)
+            sum_exp = np.sum(exp_values)
             
-            # Check for NaN values and fix if necessary
-            if np.isnan(probs).any():
-                # Fallback to uniform distribution over legal actions
+            # Check for division by zero or very small values
+            if sum_exp < 1e-10 or np.isnan(sum_exp) or np.isinf(sum_exp):
+                log.warning(f"Numerical instability in Boltzmann sum: {sum_exp}")
+                # Fallback to uniform distribution
+                probs = np.ones(len(legal_actions_indices)) / len(legal_actions_indices)
+            else:
+                probs = exp_values / sum_exp
+            
+            # Final check for NaN in probabilities
+            if np.isnan(probs).any() or np.sum(probs) == 0:
+                log.error(f"NaN or zero-sum detected in probs: {probs}")
                 probs = np.ones(len(legal_actions_indices)) / len(legal_actions_indices)
             
-            # Select action from legal actions only
-            action_idx = np.random.choice(len(legal_actions_indices), p=probs)
-            selected_action = legal_moves[action_idx]
-            
-            log.info(f"Chosen action by Boltzmann: {selected_action} | probs: {probs}")
-            return selected_action
-
-        # --- ε-greedy Policy ---
+            # Select action from legal actions
+            try:
+                action_idx = np.random.choice(len(legal_actions_indices), p=probs)
+                selected_action = legal_moves[action_idx]
+                log.info(f"Boltzmann selection: {selected_action} | probs: {probs}")
+                return selected_action
+            except Exception as e:
+                log.error(f"Error in action selection: {e}, probs: {probs}")
+                # Fallback to random action
+                return random.choice(legal_moves)
+        
+        # --- ε-greedy fallback ---
         if np.random.rand() < epsilon:
             return random.choice(legal_moves)
         
+        # Check for NaN or Inf in Q-values for legal actions
+        legal_q_values = [q_values[idx] for idx in legal_actions_indices]
+        if np.isnan(legal_q_values).any() or np.isinf(legal_q_values).any():
+            log.error(f"NaN/Inf in legal Q-values: {legal_q_values}")
+            return random.choice(legal_moves)
+        
         # Find best legal action
-        best_legal_action_idx = np.argmax([q_values[idx] for idx in legal_actions_indices])
+        best_legal_action_idx = np.argmax(legal_q_values)
         return legal_moves[best_legal_action_idx]
 
 def train_dqn_agent(
-    agent, env,
+    agent,
+    env,
     num_episodes=1000,
     batch_size=64,
     epsilon_start=1.0,
@@ -373,20 +443,16 @@ def train_dqn_agent(
     epsilon_decay=0.995,
     beta_start=0.4,
     beta_increment=1e-4,
-    save_interval=100
+    save_interval=100,
+    checkpoint_dir='./checkpoints'
 ):
-    """
-    Train a Double DQN agent with PER and Boltzmann/ε-greedy policy.
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    Parameters:
-        agent: DoubleDQNAgent
-        env: poker environment
-    """
     epsilon = epsilon_start
     beta = beta_start
     all_rewards = []
     avg_losses = []
-    
+
     for episode in trange(num_episodes, desc="Training"):
         state = env.reset()
         done = False
@@ -395,19 +461,19 @@ def train_dqn_agent(
 
         while not done:
             legal_moves = env.info['legal_moves']
+            if not legal_moves:
+                log.warning("No legal moves found; skipping step")
+                break
+
             action = agent.select_action(state, legal_moves, epsilon)
             next_state, reward, done, info = env.step(action)
             agent.memory.push(state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
 
-            # train
             if len(agent.memory) >= batch_size:
-                (states, actions, rewards,
-                 next_states, dones,
-                 indices, weights) = agent.memory.sample(batch_size, beta)
+                (states, actions, rewards, next_states, dones, indices, weights) = agent.memory.sample(batch_size, beta)
 
-                # tensors
                 states = torch.tensor(states, dtype=torch.float32).to(agent.device)
                 actions = torch.tensor(actions).unsqueeze(1).to(agent.device)
                 rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(agent.device)
@@ -415,42 +481,85 @@ def train_dqn_agent(
                 dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(agent.device)
                 weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(agent.device)
 
-                # q-values
-                q_values = agent.q_net(states).gather(1, actions)
-                next_actions = agent.q_net(next_states).argmax(1, keepdim=True)
-                next_q_values = agent.q_target(next_states).gather(1, next_actions)
-                target_q = rewards + agent.gamma * (1 - dones) * next_q_values.detach()
+                if torch.isnan(states).any() or torch.isnan(rewards).any() or torch.isnan(next_states).any():
+                    log.error("NaN detected in training inputs")
+                    continue  # Skip this batch
 
+                reward_scale = 0.01 if torch.max(rewards.abs()) > 1000 else 1.0
+                scaled_rewards = rewards * reward_scale
+
+                q_values = agent.q_net(states).gather(1, actions)
+                with torch.no_grad():   
+                    next_actions = agent.q_net(next_states).argmax(1, keepdim=True)
+                    next_q_values = agent.q_target(next_states).gather(1, next_actions)
+
+                    # Check for NaN in target network outputs
+                    if torch.isnan(next_q_values).any():
+                        log.error("NaN detected in target network outputs")
+
+
+                    next_q_values = torch.zeros_like(next_q_values)
+                    target_q = rewards + agent.gamma * (1 - dones) * next_q_values.detach()
+
+                    large_value_mask = target_q.abs() > 100.0
+                    if large_value_mask.any():
+                        target_q[large_value_mask] = 100.0 * torch.sign(target_q[large_value_mask]) * (
+                            1 + torch.log10(target_q[large_value_mask].abs() / 100.0))
+                        
                 td_errors = q_values - target_q
-                loss = (td_errors.pow(2) * weights).mean()
-                episode_losses.append(loss.item())
+                loss = nn.functional.huber_loss(q_values, target_q, reduction='none')
+                loss = (loss * weights).mean()
+
+                if torch.isnan(loss).any():
+                    log.error(f"NaN detected in loss: {loss.item()}")
+                    continue  # Skip this batch
 
                 agent.optimizer.zero_grad()
                 loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(agent.q_net.parameters(), max_norm=1.0)
+
+                # Check for NaN in gradients
+                has_nan_grad = False
+                for param in agent.q_net.parameters():
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                        has_nan_grad = True
+                        log.error("NaN detected in gradients")
+                        break
+                if has_nan_grad:
+                    continue  # Skip this batch
+
                 agent.optimizer.step()
 
-                # update priorities
-                new_priorities = td_errors.abs().detach().cpu().numpy().squeeze() + 1e-6
-                agent.memory.update_priorities(indices, new_priorities)
-
-                # soft update
+                # Update priorities with safeguards
+                td_errors_abs = td_errors.abs().detach().cpu().numpy() + 1e-6
+                if np.isnan(td_errors_abs).any():
+                    log.error("NaN detected in TD errors")
+                    td_errors_abs = np.ones_like(td_errors_abs)
+                
+                agent.memory.update_priorities(indices, td_errors_abs)
+            
                 for target_param, param in zip(agent.q_target.parameters(), agent.q_net.parameters()):
-                    target_param.data.copy_(
-                        agent.tau * param.data + (1.0 - agent.tau) * target_param.data
-                    )
+                    target_param.data.copy_(agent.tau * param.data + (1.0 - agent.tau) * target_param.data)
 
                 beta = min(1.0, beta + beta_increment)
 
         all_rewards.append(total_reward)
         avg_loss = np.mean(episode_losses) if episode_losses else 0
         avg_losses.append(avg_loss)
-        
-        # Decay epsilon
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
-        
-        # Log progress
+
         if episode % 10 == 0:
-            log.info(f"Episode {episode}/{num_episodes} | Reward: {total_reward:.2f} | "
-                     f"Avg Loss: {avg_loss:.4f} | Epsilon: {epsilon:.2f}")
-    
+            log.info(f"Episode {episode}/{num_episodes} | "
+                     f"Reward: {total_reward:.2f} | "
+                     f"Avg Loss: {avg_loss:.4f} | "
+                     f"Epsilon: {epsilon:.2f} | "
+                     f"Buffer size: {len(agent.memory)}")
+
+        if (episode + 1) % save_interval == 0:
+            save_path = os.path.join(checkpoint_dir, f"episode_{episode+1}")
+            agent.save_checkpoint(save_path)
+            log.info(f"Saved checkpoint to {save_path}")
+
     return all_rewards
+
