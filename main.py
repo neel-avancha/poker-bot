@@ -245,15 +245,18 @@ class SelfPlay:
         # Add your PyTorch DQN player
         torch_dqn_player = TorchDQNPlayer(name=model_name, env=self.env)
         self.env.add_player(torch_dqn_player)
+
+        self.env.reset()
         
         # Train the agent
         torch_dqn_player.train(env_name)
         
         # Run evaluation episodes
         self.winner_in_episodes = []
-        for _ in range(self.num_episodes):
+        for episode in range(self.num_episodes):
             self.env.reset()
             self.winner_in_episodes.append(self.env.winner_ix)
+            print("Episode Number", episode)
         
         # Print results
         league_table = pd.Series(self.winner_in_episodes).value_counts()

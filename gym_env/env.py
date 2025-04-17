@@ -477,6 +477,7 @@ class HoldemTable(Env):
         remaining_players = sum(player_alive)
         if remaining_players < 2:
             self._game_over()
+            self.stage = Stage.PREFLOP
             return True
         return False
 
@@ -635,12 +636,16 @@ class HoldemTable(Env):
     def _get_legal_moves(self):
         """Determine what moves are allowed in the current state"""
         self.legal_moves = []
+
+        # if self.stage in [Stage.SHOWDOWN, Stage.END_HIDDEN]:
+        #     return
         if self.player_pots[self.current_player.seat] == max(self.player_pots):
             self.legal_moves.append(Action.CHECK)
         else:
             self.legal_moves.append(Action.CALL)
             self.legal_moves.append(Action.FOLD)
 
+        
         if self.current_player.num_raises_in_street[self.stage] < self.max_raises_per_player_round:
             if self.current_player.stack >= 3 * self.big_blind - self.player_pots[self.current_player.seat]:
                 self.legal_moves.append(Action.RAISE_3BB)

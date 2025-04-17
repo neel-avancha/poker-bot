@@ -146,6 +146,7 @@ class Player:
         
         # Save the model
         self.save(f"dqn_{env_name}")
+        print("Reached post save clause")
         
         # Close tensorboard writer
         writer.close()
