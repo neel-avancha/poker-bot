@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from gym import Env
 from gym.spaces import Discrete
-
+from gym.spaces import Box
 from gym_env.cycle import PlayerCycle
 from gym_env.enums import Action, Stage
 from gym_env.rendering import PygletWindow, WHITE, RED, GREEN, BLUE
@@ -127,6 +127,12 @@ class HoldemTable(Env):
         self.player_pots = None  # individual player pots
 
         self.observation = None
+        obs_shape = 1000
+        self.observation_space = Box(
+        low=-np.inf,
+        high=np.inf,
+        shape=(obs_shape,),
+        dtype=np.float32)
         self.reward = None
         self.info = None
         self.done = False
@@ -288,10 +294,16 @@ class HoldemTable(Env):
                      'stage_data': [stage.__dict__ for stage in self.stage_data],
                      'legal_moves': self.legal_moves}
 
-        self.observation_space = self.array_everything.shape
-
+        self.observation_space = Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=self.array_everything.shape,
+            dtype=np.float32)
+        
         if self.render_switch:
             self.render()
+
+
 
     def _calculate_reward(self, last_action):
         """
