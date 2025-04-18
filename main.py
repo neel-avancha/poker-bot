@@ -10,7 +10,7 @@ Usage:
   main.py selfplay dqn_play [options]
   main.py selfplay dqn_train_custom [options]
   main.py selfplay dqn_play_custom [options]
-  main.py selfplay 
+  main.py selfplay deep_cfr_train [options]
   main.py learn_table_scraping [options]
 
 options:
