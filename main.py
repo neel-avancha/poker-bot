@@ -10,6 +10,7 @@ Usage:
   main.py selfplay dqn_play [options]
   main.py selfplay dqn_train_custom [options]
   main.py selfplay dqn_play_custom [options]
+  main.py selfplay 
   main.py learn_table_scraping [options]
 
 options:
@@ -375,7 +376,289 @@ class SelfPlay:
         else:
             print("No winners recorded during play")
 
-
+    def deep_cfr_train(self, model_name):
+            """Train the enhanced Deep CFR agent"""
+            from agents.agent_consider_equity import Player as EquityPlayer
+            from agents.agent_random import Player as RandomPlayer
+            from agents.agent_deep_cfr import Player as DeepCFRPlayer
+            import pandas as pd
+            import time
+            import numpy as np
+            
+            env_name = 'neuron_poker-v0'
+            self.env = gym.make(env_name, initial_stacks=self.stack, render=self.render, funds_plot=False)
+            
+            # Add opponents
+            self.env.add_player(EquityPlayer(name='equity/20/30', min_call_equity=.20, min_bet_equity=.30))
+            self.env.add_player(EquityPlayer(name='equity/30/40', min_call_equity=.30, min_bet_equity=.40))
+            
+            # Add Deep CFR player
+            deep_cfr_player = DeepCFRPlayer(name=model_name, env=self.env)
+            
+            # Keep track of training stats without affecting output
+            training_stats = {
+                'training_calls': 0,
+                'regret_updates': 0,
+                'wins': 0,
+                'episodes': 0,
+                'experience_buffer_size': []
+            }
+            
+            # Override methods to track stats silently
+            original_train_networks = deep_cfr_player.train_networks
+            def silent_train_tracker(*args, **kwargs):
+                result = original_train_networks(*args, **kwargs)
+                training_stats['training_calls'] += 1
+                return result
+            
+            original_update_regrets = deep_cfr_player.update_regrets
+            def silent_regret_tracker(*args, **kwargs):
+                result = original_update_regrets(*args, **kwargs)
+                training_stats['regret_updates'] += 1
+                return result
+            
+            # Replace methods with tracking versions
+            deep_cfr_player.train_networks = silent_train_tracker
+            deep_cfr_player.update_regrets = silent_regret_tracker
+            
+            # Save initial model for later comparison
+            self.env.add_player(deep_cfr_player)
+            self.env.reset()
+            
+            # Train the agent
+            print(f"Training Deep CFR agent '{model_name}' for {self.num_episodes} episodes...")
+            start_time = time.time()
+            deep_cfr_player.save(f"{model_name}_initial.pt")
+            
+            # Create progress tracking variables
+            winner_in_episodes = []
+            episode_rewards = []
+            
+            # Run training episodes
+            for episode in range(self.num_episodes):
+                try:
+                    # Reset environment
+                    self.env.reset()
+                    training_stats['episodes'] += 1
+                    episode_reward = 0
+                    
+                    print(f"\nStarting episode {episode+1}/{self.num_episodes}")
+                    print(f"Current experience buffer size: {len(deep_cfr_player.experience_buffer)}")
+                    print(f"Training calls so far: {training_stats['training_calls']}")
+                    
+                    # Play one episode
+                    done = False
+                    step = 0
+                    while not done:
+                        step += 1
+                        # Get current player (safely)
+                        try:
+                            if hasattr(self.env, 'current_player_idx'):
+                                current_idx = self.env.current_player_idx
+                                current_player = self.env.players[current_idx] if isinstance(current_idx, int) else None
+                            else:
+                                current_idx = None
+                                current_player = None
+                                
+                            # If we couldn't get the current player, use a fallback
+                            if current_player is None:
+                                # Try each player
+                                for idx, player in enumerate(self.env.players):
+                                    if idx == 2:  # Deep CFR player
+                                        # Always use our deep_cfr_player reference
+                                        current_player = deep_cfr_player
+                                        current_idx = 2
+                                        break
+                                        
+                            # Get action
+                            if current_idx == 2:  # Deep CFR player's turn
+                                print(f"Deep CFR player's turn (step {step})")
+                                action = deep_cfr_player.action(
+                                    self.env.legal_moves, 
+                                    self.env.observation, 
+                                    self.env.info
+                                )
+                            else:
+                                # Other player's turn - use whatever action method is available
+                                action = current_player.action(
+                                    self.env.legal_moves,
+                                    self.env.observation,
+                                    self.env.info
+                                ) if hasattr(current_player, 'action') else None
+                                
+                            # If we couldn't get an action, use a random one
+                            if action is None:
+                                import random
+                                action = random.choice(self.env.legal_moves)
+                                print(f"Using random action: {action}")
+                            
+                            # Take the action
+                            observation, reward, done, info = self.env.step(action)
+                            episode_reward += reward
+                            
+                            # Update the Deep CFR player if it was their turn
+                            if current_idx == 2:
+                                print(f"Updating Deep CFR player with reward: {reward}")
+                                deep_cfr_player.update(reward, observation, info, done)
+                                
+                        except Exception as e:
+                            # Print a simplified error message and continue
+                            print(f"Error during game step: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            if hasattr(self.env, 'legal_moves') and not self.env.legal_moves:
+                                # No legal moves means the episode is over
+                                done = True
+                            else:
+                                # Other error - try to continue
+                                continue
+                    
+                    # Record the winner and reward
+                    episode_rewards.append(episode_reward)
+                    if hasattr(self.env, 'winner_ix'):
+                        winner_in_episodes.append(self.env.winner_ix)
+                        if self.env.winner_ix == 2:  # Deep CFR player won
+                            training_stats['wins'] += 1
+                            print(f"Deep CFR player won episode {episode+1}")
+                        else:
+                            print(f"Deep CFR player lost episode {episode+1} to player {self.env.winner_ix}")
+                    
+                    # Record experience buffer size
+                    training_stats['experience_buffer_size'].append(len(deep_cfr_player.experience_buffer))
+                    
+                    # Print progress every 10 episodes
+                    if (episode + 1) % 10 == 0 or episode == 0:
+                        win_rate = training_stats['wins'] / training_stats['episodes'] if training_stats['episodes'] > 0 else 0
+                        print(f"Episode {episode+1}/{self.num_episodes} - Win rate: {win_rate:.4f} - Training calls: {training_stats['training_calls']}")
+                        print(f"Experience buffer size: {len(deep_cfr_player.experience_buffer)}")
+                        
+                    # Periodically save the model
+                    if (episode + 1) % 50 == 0:
+                        deep_cfr_player.save(f"{model_name}_episode_{episode+1}.pt")
+                        
+                except Exception as e:
+                    # Print simplified error message and continue to next episode
+                    print(f"Error in episode {episode+1}: {str(e)[:50]}...")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            # Save final model
+            deep_cfr_player.save(f"{model_name}_final.pt")
+            
+            # Training time
+            training_time = time.time() - start_time
+            print(f"Training completed in {training_time:.2f} seconds")
+            
+            # Calculate league table
+            league_table = pd.Series(winner_in_episodes).value_counts()
+            best_player = league_table.index[0] if not league_table.empty else None
+            
+            print("\nLeague Table")
+            print("============")
+            print(league_table)
+            print(f"Best Player: {best_player}")
+            
+            # Print training statistics
+            print("\nTraining Statistics")
+            print("==================")
+            print(f"Total episodes: {training_stats['episodes']}")
+            print(f"Total training calls: {training_stats['training_calls']}")
+            print(f"Total regret updates: {training_stats['regret_updates']}")
+            print(f"Win rate: {training_stats['wins'] / training_stats['episodes'] if training_stats['episodes'] > 0 else 0:.4f}")
+            print(f"Final experience buffer size: {len(deep_cfr_player.experience_buffer)}")
+            
+            # Plot experience buffer size over time
+            try:
+                import matplotlib.pyplot as plt
+                plt.figure(figsize=(10, 5))
+                plt.plot(training_stats['experience_buffer_size'])
+                plt.title('Experience Buffer Size Over Time')
+                plt.xlabel('Episode')
+                plt.ylabel('Buffer Size')
+                plt.savefig(f"{model_name}_buffer_size.png")
+                plt.close()
+                print(f"Experience buffer size plot saved to {model_name}_buffer_size.png")
+            except Exception as e:
+                print(f"Error plotting experience buffer size: {e}")
+            
+            # Verify training occurred by comparing initial and final weights
+            try:
+                import torch
+                initial_model = torch.load(f"{model_name}_initial.pt")
+                final_model = torch.load(f"{model_name}_final.pt")
+                
+                # Compare a few key parameters
+                total_diff = 0
+                param_count = 0
+                
+                for component in ['value_net', 'policy_net']:
+                    if component in initial_model and component in final_model:
+                        initial_state = initial_model[component]
+                        final_state = final_model[component]
+                        
+                        for key in initial_state:
+                            if key in final_state:
+                                initial_param = initial_state[key].cpu().numpy()
+                                final_param = final_state[key].cpu().numpy()
+                                diff = np.sum(np.abs(final_param - initial_param))
+                                
+                                total_diff += diff
+                                param_count += np.prod(initial_param.shape)
+                
+                if param_count > 0:
+                    avg_diff = total_diff / param_count
+                    print(f"\nTraining Verification: Average parameter change: {avg_diff:.8f}")
+                    if avg_diff < 1e-6:
+                        print("WARNING: Parameters barely changed - model may not be learning!")
+                    else:
+                        print("Model parameters changed significantly - training is working properly.")
+                
+            except Exception as e:
+                print(f"Could not verify training: {e}")
+                
+            return winner_in_episodes, league_table
+    
+    def _evaluate_deep_cfr(self, deep_cfr_player, num_episodes):
+        """Evaluate the Deep CFR agent against other agents"""
+        from agents.agent_consider_equity import Player as EquityPlayer
+        from agents.agent_random import Player as RandomPlayer
+        
+        # Create a new environment for evaluation
+        eval_env = gym.make('neuron_poker-v0', initial_stacks=self.stack, render=False)
+        
+        # Add opponents
+        eval_env.add_player(EquityPlayer(name='equity/20/30', min_call_equity=.20, min_bet_equity=.30))
+        eval_env.add_player(EquityPlayer(name='equity/30/40', min_call_equity=.30, min_bet_equity=.40))
+        eval_env.add_player(RandomPlayer(name='random1'))
+        eval_env.add_player(RandomPlayer(name='random2'))
+        
+        # Add Deep CFR player
+        eval_env.add_player(deep_cfr_player)
+        
+        # Run evaluation episodes
+        winners = []
+        for _ in range(num_episodes):
+            eval_env.reset()
+            done = False
+            while not done:
+                action = eval_env.players[eval_env.current_player].action(
+                    eval_env.legal_moves,
+                    eval_env.observation,
+                    eval_env.info
+                )
+                _, _, done, _ = eval_env.step(action)
+            
+            winners.append(eval_env.winner_ix)
+        
+        # Calculate results
+        results = pd.Series(winners).value_counts()
+        win_rate = results.get(4, 0) / num_episodes  # Assuming Deep CFR player is at index 4
+        
+        return {
+            'win_rate': win_rate,
+            'results': results
+        }
 
 if __name__ == '__main__':
     command_line_parser()
