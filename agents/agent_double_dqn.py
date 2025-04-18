@@ -91,20 +91,19 @@ class Player:
         """Load the model from disk"""
         import json
         
-        # Load metadata
-        with open(f"{filename}_metadata.json", "r") as f:
-            metadata = json.load(f)
+        # # Load metadata
+        # with open(f"{filename}_metadata.json", "r") as f:
+        #     metadata = json.load(f)
         
         # Determine device
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Create new DQN agent with the same architecture
         self.dqn = DoubleDQNAgent(
-            state_dim=metadata["state_dim"],
-            action_dim=metadata["action_dim"],
-            device=device,
-            boltzmann_tau=metadata.get("boltzmann_tau", 1.0),
-            use_boltzmann=metadata.get("use_boltzmann", True)
+            state_dim=175,
+            action_dim=8,
+            boltzmann_tau=1.0,
+            use_boltzmann=True
         )
 
         # Load network parameters
@@ -113,7 +112,7 @@ class Player:
         
         print(f"Model loaded from {filename}")
 
-    def train(self, env_name):
+    def train(self, env_name, num_episodes=1000):
         """Train the DQN agent"""
         if self.dqn is None:
             self.initiate_agent(self.env)
@@ -124,7 +123,6 @@ class Player:
         writer = SummaryWriter(log_dir=f'./Graph/{timestr}')
         
         # Training parameters
-        num_episodes = 1000
         batch_size = 64
         epsilon_start = 1.0
         epsilon_end = 0.05
@@ -154,7 +152,7 @@ class Player:
         
         return rewards
     
-    def play(self, nb_episodes=5, render=False):
+    def play(self, nb_episodes=10, render=False):
         """Let the agent play in the environment without training"""
         if self.dqn is None:
             raise ValueError("Agent must be initialized or loaded before playing")
@@ -436,7 +434,7 @@ class DoubleDQNAgent:
 def train_dqn_agent(
     agent,
     env,
-    num_episodes=1000,
+    num_episodes=800,
     batch_size=64,
     epsilon_start=1.0,
     epsilon_end=0.05,
@@ -472,12 +470,15 @@ def train_dqn_agent(
             total_reward += reward
 
             if len(agent.memory) >= batch_size:
+                log.info("Batch processing started - memory size sufficient")
                 (states, actions, rewards, next_states, dones, indices, weights) = agent.memory.sample(batch_size, beta)
+                log.info(f"Batch sampled - rewards shape: {rewards.shape}")
+
 
                 states = torch.tensor(states, dtype=torch.float32).to(agent.device)
                 actions = torch.tensor(actions).unsqueeze(1).to(agent.device)
                 rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(agent.device)
-                next_states = torch.tensor(next_states, dtype=torch.float32).to(agent.device)
+                log.info(f'REWARDS tensor: min={rewards.min().item()}, max={rewards.max().item()}, mean={rewards.mean().item()}')
                 dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(agent.device)
                 weights = torch.tensor(weights, dtype=torch.float32).unsqueeze(1).to(agent.device)
 
@@ -486,7 +487,6 @@ def train_dqn_agent(
                     continue  # Skip this batch
 
                 reward_scale = 0.01 if torch.max(rewards.abs()) > 1000 else 1.0
-                scaled_rewards = rewards * reward_scale
 
                 q_values = agent.q_net(states).gather(1, actions)
                 with torch.no_grad():   
@@ -549,7 +549,7 @@ def train_dqn_agent(
         avg_losses.append(avg_loss)
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
 
-        if episode % 10 == 0:
+        if episode % 1 == 0:
             log.info(f"Episode {episode}/{num_episodes} | "
                      f"Reward: {total_reward:.2f} | "
                      f"Avg Loss: {avg_loss:.4f} | "
@@ -560,6 +560,7 @@ def train_dqn_agent(
             save_path = os.path.join(checkpoint_dir, f"episode_{episode+1}")
             agent.save_checkpoint(save_path)
             log.info(f"Saved checkpoint to {save_path}")
+            # print(f"Saved checkpoint to {save_path}")
 
     return all_rewards
 

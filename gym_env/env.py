@@ -191,6 +191,10 @@ class HoldemTable(Env):
         # keras-rl
         self.reward = 0
         self.acting_agent = self.player_cycle.idx
+
+
+        current_player_name = self.current_player.name if hasattr(self.current_player, 'name') else "Unknown"
+
         if self._agent_is_autoplay():
             while self._agent_is_autoplay() and not self.done:
                 log.debug("Autoplay agent. Call action method of agent.")
@@ -207,6 +211,9 @@ class HoldemTable(Env):
                     if self.first_action_for_hand[self.acting_agent] or self.done:
                         self.first_action_for_hand[self.acting_agent] = False
                         self._calculate_reward(action)
+                        # print(f"Player {current_player_name} (Seat {self.acting_agent}) - Action: {Action(action).name} - Reward: {self.reward:.2f}")
+
+
 
         else:  # action received from player shell (e.g. keras rl, not autoplay)
             self._get_environment()  # get legal moves
@@ -221,8 +228,11 @@ class HoldemTable(Env):
                 if self.first_action_for_hand[self.acting_agent] or self.done:
                     self.first_action_for_hand[self.acting_agent] = False
                     self._calculate_reward(action)
+                    # print(f"Player {current_player_name} (Seat {self.acting_agent}) - Action: {Action(action).name} - Reward: {self.reward:.2f}")
 
-            log.debug(f"Previous action reward for seat {self.acting_agent}: {self.reward}")
+
+            log.info(f"Previous action reward for seat {self.acting_agent}: {self.reward}")
+
         return self.array_everything, self.reward, self.done, self.info
 
     def _execute_step(self, action):
@@ -297,7 +307,7 @@ class HoldemTable(Env):
         self.array_everything = np.concatenate([arr1, arr2, arr3]).flatten()
 
         if np.isnan(self.array_everything).any():
-            log.error(f"NaN values detected in observation: {np.where(np.isnan(self.array_everything))[0]}")
+            # log.error(f"NaN values detected in observation: {np.where(np.isnan(self.array_everything))[0]}")
             self.array_everything = np.nan_to_num(self.array_everything)
 
         self.array_everything = self.array_everything.astype(np.float32)

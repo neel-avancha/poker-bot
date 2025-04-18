@@ -9,6 +9,7 @@ Usage:
   main.py selfplay dqn_train [options]
   main.py selfplay dqn_play [options]
   main.py selfplay dqn_train_custom [options]
+  main.py selfplay dqn_play_custom [options]
   main.py learn_table_scraping [options]
 
 options:
@@ -83,6 +84,9 @@ def command_line_parser():
 
         elif args['dqn_play']:
             runner.dqn_play_keras_rl(model_name)
+        
+        elif args['dqn_play_custom']:
+            runner.dqn_play_custom(model_name)
 
 
     else:
@@ -231,7 +235,6 @@ class SelfPlay:
     def dqn_train_custom(self, model_name):
         """Train a PyTorch-based DQN agent"""
         from agents.agent_consider_equity import Player as EquityPlayer
-        from agents.agent_random import Player as RandomPlayer
         from agents.agent_double_dqn import Player as TorchDQNPlayer  # Your PyTorch implementation
         import pandas as pd
         
@@ -249,7 +252,7 @@ class SelfPlay:
         self.env.reset()
         
         # Train the agent
-        torch_dqn_player.train(env_name)
+        torch_dqn_player.train(env_name,num_episodes=self.num_episodes)
         
         # Run evaluation episodes
         self.winner_in_episodes = []
@@ -266,6 +269,111 @@ class SelfPlay:
         print("============")
         print(league_table)
         print(f"Best Player: {best_player}")
+
+    # def dqn_play_custom(self, model_name):
+    #     """Train a PyTorch-based DQN agent"""
+    #     from agents.agent_consider_equity import Player as EquityPlayer
+    #     from agents.agent_double_dqn import Player as TorchDQNPlayer  # Your PyTorch implementation
+    #     from agents.agent_keypress import Player as KeyPressAgent
+
+    #     import pandas as pd
+        
+    #     env_name = 'neuron_poker-v0'
+    #     self.env = gym.make(env_name, initial_stacks=self.stack, render=self.render)
+        
+    #     # Add opponents
+    #     self.env.add_player(KeyPressAgent())
+    #     self.env.add_player(EquityPlayer(name='equity/30/40', min_call_equity=.30, min_bet_equity=.40))
+
+    #     # Add your PyTorch DQN player
+    #     torch_dqn_player = TorchDQNPlayer(name=model_name, env=self.env)
+    #     self.env.add_player(torch_dqn_player)
+
+    #     self.env.reset()
+        
+    #     # Train the agent
+    #     torch_dqn_player.train(env_name,num_episodes=self.num_episodes)
+        
+    #     # Run evaluation episodes
+    #     self.winner_in_episodes = []
+    #     for episode in range(self.num_episodes):
+    #         self.env.reset()
+    #         self.winner_in_episodes.append(self.env.winner_ix)
+    #         print("Episode Number", episode)
+        
+    #     # Print results
+    #     league_table = pd.Series(self.winner_in_episodes).value_counts()
+    #     best_player = league_table.index[0]
+        
+    #     print("League Table")
+    #     print("============")
+    #     print(league_table)
+    #     print(f"Best Player: {best_player}")
+
+    def dqn_play_custom(self, model_name):
+        """Play poker with a pre-trained PyTorch-based DQN agent"""
+        from agents.agent_consider_equity import Player as EquityPlayer
+        from agents.agent_double_dqn import Player as TorchDQNPlayer
+        from agents.agent_keypress import Player as KeyPressAgent
+        import pandas as pd
+        
+        env_name = 'neuron_poker-v0'
+        self.env = gym.make(env_name, initial_stacks=self.stack, render=self.render)
+        
+        # Add opponents
+        self.env.add_player(KeyPressAgent())
+        self.env.add_player(EquityPlayer(name='equity/30/40', min_call_equity=.30, min_bet_equity=.40))
+
+        # Add your PyTorch DQN player with the pre-trained model
+        torch_dqn_player = TorchDQNPlayer(name=model_name, load_model=model_name, env=self.env)
+        self.env.add_player(torch_dqn_player)
+
+        # Initialize the environment
+        self.env.reset()
+        
+        # No training, just play episodes with the loaded model
+        print(f"Playing with pre-trained model: {model_name}")
+        
+        # Play episodes
+        self.winner_in_episodes = []
+        for episode in range(self.num_episodes):
+            self.env.reset()
+            done = False
+            
+            # Play a complete episode
+            while not done:
+                # Get current player
+                current_player = self.env.current_player
+                
+                # If it's our DQN agent, explicitly call its action method
+                if hasattr(current_player, 'name') and current_player.name == model_name:
+                    # Get action from the trained policy
+                    action = torch_dqn_player.action(
+                        self.env.legal_moves, 
+                        self.env.observation, 
+                        self.env.info
+                    )
+                    _, reward, done, _ = self.env.step(action)
+                else:
+                    # For other players (including KeyPressAgent), let the environment handle it
+                    _, _, done, _ = self.env.step(None)
+
+            
+            self.winner_in_episodes.append(self.env.winner_ix)
+            print(f"Episode {episode+1}: Winner = {self.env.winner_ix}")
+        
+        # Print results
+        league_table = pd.Series(self.winner_in_episodes).value_counts()
+        if len(league_table) > 0:
+            best_player = league_table.index[0]
+            best_player_name = [p.name for i, p in enumerate(self.env.players) if i == best_player][0]
+            
+            print("League Table")
+            print("============")
+            print(league_table)
+            print(f"Best Player: {best_player_name} (index {best_player})")
+        else:
+            print("No winners recorded during play")
 
 
 
